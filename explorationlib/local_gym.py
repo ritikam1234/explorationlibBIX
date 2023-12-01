@@ -1268,6 +1268,180 @@ class CutthroatField(gym.Env):
         pass
 
 
+class VisualField(gym.Env):
+    """An open-ended field, with prey, who form teams.
+    
+    Params
+    -----
+    num_agents: int
+        The total number of agents
+
+    Notes
+    -----
+    Teams move as one 'agent', with a value equal
+    to the total individual values. 
+    
+    However!
+
+    Predator `detection_radius` is scaled by the 
+    value of each agent or team. That is, 
+    `detection_radius * value`.
+    """
+    def __init__(self, num_agents=2):
+        self.num_agents = num_agents
+        self.info = {}
+        self.reward = 0.0
+        self.done = False
+
+        self.detection_radius = None
+        self.friend_radius = None
+        self.targets = None
+        self.initial_targets = None
+        self.values = None
+        self.initial_values = None
+        self.seed()
+        self.reset()
+
+    def step(self, action, n):
+        """Agent 'n' takes a step, then checks targets/friends."""
+        # Step
+        self.n = n
+        self.state[n] += action
+
+        # Update/check targets,
+        # then check friends
+        self.reward = 0.0
+        self.check_targets(n)
+
+        # Return last env transition
+        return self.last()
+
+    def last(self):
+        """Transition - (state, reward, done, info)"""
+        return (self.state, self.reward, self.done, self.info)
+
+    def add_targets(self,
+                    index,
+                    targets,
+                    values,
+                    detection_radius=1,
+                    friend_radius=1,
+                    p_target=1.0,
+                    p_friend=1.0):
+        """Add targets, and their values.
+        
+        Params
+        ------
+        index : list
+            The index of agents who act as targets (aka prey)
+        targets : list
+            Intial target (prey) locations
+        values : list
+            Intial target (prey) values
+        detection_radius : int (> 1)
+            How far the predator can 'see'
+        friend_radius : int (> 1)
+            How far the targets (prey) can 'see'
+        p_target : float (0-1)
+            Prob. predator find targets (in the detection_radius)
+        p_friend : float (0-1)
+            Prob. prey become friends (in the friend_radius)
+        """
+        # An index to seperate prey (targets)
+        # from predators, when all are agents.
+        self.target_index = index
+
+        # Sanity check
+        if len(index) != len(targets):
+            raise ValueError("index and targets must match.")
+        if len(targets) != len(values):
+            raise ValueError("targets and values must match.")
+
+        # Will it be there?
+        self.p_target = p_target
+        self.p_friend = p_friend
+        self.detection_radius = detection_radius
+        self.friend_radius = friend_radius
+
+        # Store raw targets simply (list)
+        self.num_targets = len(targets)
+
+        self.initial_targets = deepcopy(targets)
+        self.initial_values = deepcopy(values)
+
+        self.targets = deepcopy(self.initial_targets)
+        self.values = deepcopy(self.initial_values)
+
+        # Step targets to initial positions
+        for i, t in zip(self.target_index, self.targets):
+            self.step(t, i)
+
+        # Init Target tree (for fast lookup)
+        self._kd = KDTree(np.vstack(self.targets))
+
+    def check_targets(self, n):
+        """Check for targets, and update self.reward"""
+        # No targets
+        if self.targets is None:
+            return None
+
+        # Is 'n' a predator?
+        if n not in self.target_index:
+            # How far are targets?
+            state = np.atleast_2d(np.asarray(self.state[n]))
+            dist, ind = self._kd.query(state, k=1)
+
+            # Pick the closest
+            dist = float(dist[0])
+            ind = int(ind[0])
+            code = self.target_index[ind]
+
+            # What's the value?
+            value = self.values[ind]
+
+            # Are they in the radius?
+            if code not in self.dead:
+                if dist <= (self.detection_radius * value):
+                    # Detection coin flip:
+                    if self.np_random.rand() <= self.p_target:
+                        # Pret value is
+                        self.reward = value
+
+                        # Death to prey, if detection
+                        self.values[ind] = 0.0
+                        self.dead.append(code)
+                    else:
+                        self.reward = 0.0
+
+    def seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
+
+    def reset(self):
+        # Reinit
+        self.n = 0
+        self.state = [np.zeros(2) for _ in range(self.num_agents)]
+
+        # Restep targets and values
+        if self.initial_targets is not None:
+            self.targets = deepcopy(self.initial_targets)
+            for i, t in zip(self.target_index, self.targets):
+                self.step(t, i)
+
+        if self.initial_values is not None:
+            self.values = deepcopy(self.initial_values)
+
+        # Revive the dead!
+        self.dead = []
+        self.friends = []
+
+        # Reset
+        self.reward = 0.0
+        self.last()
+
+    def render(self, mode='human', close=False):
+        pass
+
 class CutthroatGrid(CutthroatField):
     """An open-ended grid world, with predators who attack everyone!.
     
